@@ -1,0 +1,54 @@
+{
+  "name": "oceangram-tray",
+  "version": "0.1.0",
+  "description": "Minimal Mac menu bar Telegram client — floating avatar bubbles for whitelisted contacts",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.oceangram.tray",
+    "productName": "Oceangram Tray",
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "target": [
+        "dmg"
+      ],
+      "icon": "src/assets/icon.png",
+      "darkModeSupport": true
+    },
+    "dmg": {
+      "title": "Oceangram Tray",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "files": [
+      "src/**/*"
+    ]
+  },
+  "author": "Ocean Vael",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  }
+}
