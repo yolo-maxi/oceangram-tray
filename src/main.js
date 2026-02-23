@@ -1,6 +1,8 @@
 // main.js — Electron main process for Oceangram Tray
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, Notification, screen } = require('electron');
 const path = require('path');
+const http = require('http');
+const { DaemonManager } = require('./daemonManager');
 
 // Modules (loaded after app ready)
 let daemon, whitelist, tracker, bubbles;
@@ -8,7 +10,9 @@ let daemon, whitelist, tracker, bubbles;
 // Globals
 let tray = null;
 let settingsWindow = null;
+let loginWindow = null;
 let chatPopups = new Map(); // userId -> BrowserWindow
+const daemonManager = new DaemonManager();
 
 // ── App setup ──
 
@@ -31,9 +35,128 @@ if (process.platform === 'darwin') {
   app.dock.hide();
 }
 
+// ── Helper: check if logged in ──
+
+function checkLoggedIn() {
+  return new Promise((resolve) => {
+    const req = http.get('http://localhost:7777/me', (res) => {
+      if (res.statusCode === 200) {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            const me = JSON.parse(data);
+            resolve(!!me.id);
+          } catch {
+            resolve(false);
+          }
+        });
+      } else {
+        res.resume();
+        resolve(false);
+      }
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(3000, () => { req.destroy(); resolve(false); });
+  });
+}
+
 // ── App ready ──
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Create tray immediately with "Starting..." state
+  createTray();
+  tray.setToolTip('Oceangram — Starting...');
+
+  // Start the daemon
+  console.log('[main] Starting daemon...');
+  const daemonReady = await daemonManager.start();
+  if (!daemonReady) {
+    console.error('[main] Daemon failed to start');
+    tray.setToolTip('Oceangram — Daemon failed to start');
+    // Still try to continue — daemon might be externally managed
+  }
+
+  // Check if logged in
+  const loggedIn = await checkLoggedIn();
+
+  if (!loggedIn) {
+    console.log('[main] Not logged in — showing login window');
+    tray.setToolTip('Oceangram — Login required');
+    showLoginWindow();
+  } else {
+    console.log('[main] Already logged in — initializing');
+    initializeApp();
+  }
+});
+
+app.on('window-all-closed', (e) => {
+  // Don't quit when windows close — we're a tray app
+  e.preventDefault();
+});
+
+app.on('before-quit', () => {
+  if (daemon) daemon.stop();
+  if (tracker) tracker.stop();
+  if (bubbles) bubbles.destroyAll();
+  daemonManager.stop();
+});
+
+// ── Login Window ──
+
+function showLoginWindow() {
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.focus();
+    return;
+  }
+
+  loginWindow = new BrowserWindow({
+    width: 380,
+    height: 520,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: false,
+    hasShadow: true,
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
+    roundedCorners: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'loginPreload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  loginWindow.loadFile(path.join(__dirname, 'login.html'));
+
+  loginWindow.on('closed', () => {
+    loginWindow = null;
+  });
+}
+
+// IPC from login window
+ipcMain.on('login-success', () => {
+  console.log('[main] Login success — initializing app');
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.close();
+  }
+  loginWindow = null;
+  initializeApp();
+});
+
+ipcMain.on('close-login', () => {
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.close();
+  }
+  loginWindow = null;
+});
+
+// ── Initialize app after login ──
+
+function initializeApp() {
   // Load modules
   daemon = require('./daemon');
   whitelist = require('./whitelist');
@@ -41,7 +164,6 @@ app.whenReady().then(() => {
   bubbles = require('./bubbles');
 
   // Setup
-  createTray();
   setupIPC();
   bubbles.init();
   bubbles.setPopupFactory(openChatPopup);
@@ -79,19 +201,9 @@ app.whenReady().then(() => {
     }
   });
 
-  console.log('[main] Oceangram Tray started');
-});
-
-app.on('window-all-closed', (e) => {
-  // Don't quit when windows close — we're a tray app
-  e.preventDefault();
-});
-
-app.on('before-quit', () => {
-  daemon.stop();
-  tracker.stop();
-  bubbles.destroyAll();
-});
+  updateTrayIcon();
+  console.log('[main] Oceangram Tray initialized');
+}
 
 // ── Tray ──
 
@@ -108,27 +220,32 @@ function createTray() {
 
 function updateTrayMenu() {
   const bubblesVisible = bubbles ? bubbles.visible : true;
-  const menu = Menu.buildFromTemplate([
-    {
+  const items = [];
+
+  if (bubbles) {
+    items.push({
       label: bubblesVisible ? 'Hide Bubbles' : 'Show Bubbles',
       click: () => {
         bubbles.toggleVisibility();
         updateTrayMenu();
       },
+    });
+    items.push({ type: 'separator' });
+  }
+
+  items.push({
+    label: 'Settings',
+    click: openSettings,
+  });
+  items.push({ type: 'separator' });
+  items.push({
+    label: 'Quit Oceangram',
+    click: () => {
+      app.quit();
     },
-    { type: 'separator' },
-    {
-      label: 'Settings',
-      click: openSettings,
-    },
-    { type: 'separator' },
-    {
-      label: 'Quit Oceangram',
-      click: () => {
-        app.quit();
-      },
-    },
-  ]);
+  });
+
+  const menu = Menu.buildFromTemplate(items);
   tray.setContextMenu(menu);
 }
 
