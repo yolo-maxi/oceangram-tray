@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 
 await build({
-  entryPoints: ['/home/xiko/oceangram-daemon/src/cli.ts'],
+  entryPoints: ['../oceangram-daemon/src/cli.ts'],
   bundle: true,
   platform: 'node',
   target: 'node18',
