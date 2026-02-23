@@ -48,4 +48,7 @@ contextBridge.exposeInMainWorld('oceangram', {
 
   // Window control
   startDrag: () => ipcRenderer.send('start-drag'),
+
+  // Login
+  loginSuccess: () => ipcRenderer.send('login-success'),
 });

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+resources/daemon-bundle.js
 *.dmg
 *.zip
 .DS_Store
