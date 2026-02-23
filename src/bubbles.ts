@@ -1,28 +1,42 @@
-// bubbles.js — Floating avatar bubble windows
-const { BrowserWindow, screen, ipcMain } = require('electron');
-const path = require('path');
-const daemon = require('./daemon');
-const whitelist = require('./whitelist');
-const tracker = require('./tracker');
+// bubbles.ts — Floating avatar bubble windows
+import { BrowserWindow, screen, ipcMain, IpcMainEvent } from 'electron';
+import path from 'path';
+import daemon from './daemon';
+import whitelist from './whitelist';
+import tracker from './tracker';
 
 const BUBBLE_SIZE = 64;
 const BUBBLE_GAP = 12;
 const EDGE_MARGIN = 20;
 const MAX_BUBBLES = 5;
 
+type PopupFactory = (userId: string) => void;
+
+interface BubbleDataResult {
+  [userId: string]: {
+    displayName: string;
+    count: number;
+  };
+}
+
 class BubbleManager {
+  bubbles: Map<string, BrowserWindow>;
+  private popupFactory: PopupFactory | null;
+  visible: boolean;
+  private avatarCache: Map<string, string>;
+
   constructor() {
-    this.bubbles = new Map(); // userId -> BrowserWindow
-    this.popupFactory = null; // set by main.js
+    this.bubbles = new Map();
+    this.popupFactory = null;
     this.visible = true;
-    this.avatarCache = new Map(); // userId -> base64
+    this.avatarCache = new Map();
   }
 
-  setPopupFactory(factory) {
+  setPopupFactory(factory: PopupFactory): void {
     this.popupFactory = factory;
   }
 
-  async createBubble(userId, unreadCount) {
+  async createBubble(userId: string, unreadCount: number): Promise<void> {
     if (this.bubbles.has(userId)) {
       this._updateBubble(userId, unreadCount);
       return;
@@ -30,7 +44,7 @@ class BubbleManager {
 
     if (this.bubbles.size >= MAX_BUBBLES) return;
 
-    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    const { width: screenW } = screen.getPrimaryDisplay().workAreaSize;
     const settings = whitelist.getSettings();
     const position = settings.bubblePosition || 'right';
     const index = this.bubbles.size;
@@ -62,9 +76,9 @@ class BubbleManager {
 
     // Make it truly round + clickable
     bubble.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    
+
     // Load bubble HTML
-    bubble.loadFile(path.join(__dirname, 'bubble.html'));
+    bubble.loadFile(path.join(__dirname, '..', 'src', 'bubble.html'));
 
     bubble.webContents.on('did-finish-load', async () => {
       const userInfo = whitelist.getUserInfo(userId);
@@ -85,14 +99,14 @@ class BubbleManager {
     });
   }
 
-  _updateBubble(userId, count) {
+  private _updateBubble(userId: string, count: number): void {
     const bubble = this.bubbles.get(userId);
     if (!bubble || bubble.isDestroyed()) return;
     bubble.webContents.send('bubble-update', { userId, count });
   }
 
-  async _getAvatar(userId) {
-    if (this.avatarCache.has(userId)) return this.avatarCache.get(userId);
+  private async _getAvatar(userId: string): Promise<string | null> {
+    if (this.avatarCache.has(userId)) return this.avatarCache.get(userId)!;
     const base64 = await daemon.getProfilePhotoBase64(userId);
     if (base64) {
       this.avatarCache.set(userId, base64);
@@ -100,7 +114,7 @@ class BubbleManager {
     return base64;
   }
 
-  removeBubble(userId) {
+  removeBubble(userId: string): void {
     const bubble = this.bubbles.get(userId);
     if (bubble && !bubble.isDestroyed()) {
       bubble.close();
@@ -108,27 +122,27 @@ class BubbleManager {
     this.bubbles.delete(userId);
   }
 
-  showAll() {
+  showAll(): void {
     this.visible = true;
     for (const [, bubble] of this.bubbles) {
       if (!bubble.isDestroyed()) bubble.show();
     }
   }
 
-  hideAll() {
+  hideAll(): void {
     this.visible = false;
     for (const [, bubble] of this.bubbles) {
       if (!bubble.isDestroyed()) bubble.hide();
     }
   }
 
-  toggleVisibility() {
+  toggleVisibility(): boolean {
     if (this.visible) this.hideAll();
     else this.showAll();
     return this.visible;
   }
 
-  repositionAll() {
+  repositionAll(): void {
     const { width: screenW } = screen.getPrimaryDisplay().workAreaSize;
     const settings = whitelist.getSettings();
     const position = settings.bubblePosition || 'right';
@@ -145,7 +159,7 @@ class BubbleManager {
     }
   }
 
-  destroyAll() {
+  destroyAll(): void {
     for (const [, bubble] of this.bubbles) {
       if (!bubble.isDestroyed()) bubble.close();
     }
@@ -154,7 +168,7 @@ class BubbleManager {
 
   // ── Event handlers ──
 
-  handleUnreadsChanged(userId, count) {
+  handleUnreadsChanged(userId: string, count: number): void {
     if (count > 0) {
       this.createBubble(userId, count);
     } else {
@@ -162,26 +176,26 @@ class BubbleManager {
     }
   }
 
-  handleBubbleClicked(userId) {
+  handleBubbleClicked(userId: string): void {
     if (this.popupFactory) {
       this.popupFactory(userId);
     }
   }
 
-  init() {
+  init(): void {
     // Listen for tracker events
-    tracker.on('user-unreads-changed', ({ userId, count }) => {
+    tracker.on('user-unreads-changed', ({ userId, count }: { userId: string; count: number }) => {
       this.handleUnreadsChanged(userId, count);
     });
 
     // IPC: bubble clicked
-    ipcMain.on('bubble-clicked', (_, userId) => {
+    ipcMain.on('bubble-clicked', (_: IpcMainEvent, userId: string) => {
       this.handleBubbleClicked(userId);
     });
 
     // IPC: get bubble data
-    ipcMain.handle('get-bubble-data', () => {
-      const result = {};
+    ipcMain.handle('get-bubble-data', (): BubbleDataResult => {
+      const result: BubbleDataResult = {};
       for (const [userId] of this.bubbles) {
         const info = whitelist.getUserInfo(userId);
         const unreads = tracker.getUnreads(userId);
@@ -195,4 +209,4 @@ class BubbleManager {
   }
 }
 
-module.exports = new BubbleManager();
+export = new BubbleManager();

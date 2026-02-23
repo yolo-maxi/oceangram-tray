@@ -1,10 +1,12 @@
-// settings.js — Settings renderer logic
+// settings.ts — Settings renderer logic
+/// <reference path="renderer.d.ts" />
+
 (() => {
   const api = window.oceangram;
 
   const COLORS = ['#e53935','#d81b60','#8e24aa','#5e35b1','#3949ab','#1e88e5','#00897b','#43a047','#f4511e','#6d4c41'];
 
-  function getColor(id) {
+  function getColor(id: string): string {
     let hash = 0;
     const s = String(id);
     for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash) + s.charCodeAt(i);
@@ -12,27 +14,27 @@
   }
 
   // DOM
-  const statusDot = document.getElementById('statusDot');
-  const statusText = document.getElementById('statusText');
-  const statusDetail = document.getElementById('statusDetail');
-  const whitelistList = document.getElementById('whitelistList');
-  const dialogSelect = document.getElementById('dialogSelect');
-  const addBtn = document.getElementById('addBtn');
-  const closeBtn = document.getElementById('closeBtn');
-  const alwaysOnTopToggle = document.getElementById('alwaysOnTop');
-  const showNotificationsToggle = document.getElementById('showNotifications');
-  const bubblePositionSelect = document.getElementById('bubblePosition');
+  const statusDot = document.getElementById('statusDot')!;
+  const statusText = document.getElementById('statusText')!;
+  const statusDetail = document.getElementById('statusDetail')!;
+  const whitelistList = document.getElementById('whitelistList')!;
+  const dialogSelect = document.getElementById('dialogSelect') as HTMLSelectElement;
+  const addBtn = document.getElementById('addBtn') as HTMLButtonElement;
+  const closeBtn = document.getElementById('closeBtn')!;
+  const alwaysOnTopToggle = document.getElementById('alwaysOnTop') as HTMLInputElement;
+  const showNotificationsToggle = document.getElementById('showNotifications') as HTMLInputElement;
+  const bubblePositionSelect = document.getElementById('bubblePosition') as HTMLSelectElement;
 
   // ── Load state ──
 
-  async function init() {
+  async function init(): Promise<void> {
     await loadStatus();
     await loadWhitelist();
     await loadDialogs();
     await loadSettings();
   }
 
-  async function loadStatus() {
+  async function loadStatus(): Promise<void> {
     const status = await api.getDaemonStatus();
     if (status) {
       statusDot.classList.add('connected');
@@ -45,7 +47,7 @@
     }
   }
 
-  async function loadWhitelist() {
+  async function loadWhitelist(): Promise<void> {
     const list = await api.getWhitelist();
 
     if (!list || list.length === 0) {
@@ -53,7 +55,7 @@
       return;
     }
 
-    whitelistList.innerHTML = list.map(user => `
+    whitelistList.innerHTML = list.map((user) => `
       <div class="whitelist-item" data-user-id="${user.userId}">
         <div class="whitelist-avatar" style="background: ${getColor(user.userId)}">
           ${(user.displayName || '?')[0].toUpperCase()}
@@ -67,27 +69,38 @@
     `).join('');
 
     // Bind remove buttons
-    whitelistList.querySelectorAll('.whitelist-remove').forEach(btn => {
+    whitelistList.querySelectorAll('.whitelist-remove').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const uid = btn.dataset.userId;
-        await api.removeUser(uid);
-        await loadWhitelist();
-        await loadDialogs();
+        const uid = (btn as HTMLElement).dataset.userId;
+        if (uid) {
+          await api.removeUser(uid);
+          await loadWhitelist();
+          await loadDialogs();
+        }
       });
     });
   }
 
-  async function loadDialogs() {
+  interface DialogItem {
+    id: string | number;
+    userId?: string | number;
+    username?: string;
+    title?: string;
+    name?: string;
+    firstName?: string;
+  }
+
+  async function loadDialogs(): Promise<void> {
     const dialogs = await api.getDialogs();
-    const whitelist = await api.getWhitelist();
-    const whitelistedIds = new Set((whitelist || []).map(u => String(u.userId)));
+    const whitelistData = await api.getWhitelist();
+    const whitelistedIds = new Set((whitelistData || []).map((u) => String(u.userId)));
 
     dialogSelect.innerHTML = '<option value="">— Select a contact to add —</option>';
 
     if (!Array.isArray(dialogs)) return;
 
     // Filter out already-whitelisted users
-    const available = dialogs.filter(d => {
+    const available = (dialogs as DialogItem[]).filter((d) => {
       const uid = String(d.userId || d.id);
       return uid && !whitelistedIds.has(uid);
     });
@@ -100,12 +113,12 @@
         displayName: d.title || d.name || d.firstName || d.username || String(d.id),
       });
       const label = d.title || d.name || d.firstName || d.username || d.id;
-      opt.textContent = label + (d.username ? ` (@${d.username})` : '');
+      opt.textContent = String(label) + (d.username ? ` (@${d.username})` : '');
       dialogSelect.appendChild(opt);
     }
   }
 
-  async function loadSettings() {
+  async function loadSettings(): Promise<void> {
     const settings = await api.getSettings();
     if (!settings) return;
 
@@ -123,7 +136,7 @@
   addBtn.addEventListener('click', async () => {
     if (!dialogSelect.value) return;
     try {
-      const user = JSON.parse(dialogSelect.value);
+      const user = JSON.parse(dialogSelect.value) as { userId: string; username: string; displayName: string };
       await api.addUser(user);
       await loadWhitelist();
       await loadDialogs();
@@ -141,18 +154,18 @@
   });
 
   bubblePositionSelect.addEventListener('change', () => {
-    api.updateSettings({ bubblePosition: bubblePositionSelect.value });
+    api.updateSettings({ bubblePosition: bubblePositionSelect.value as 'left' | 'right' });
   });
 
   closeBtn.addEventListener('click', () => {
     api.closePopup();
   });
 
-  document.addEventListener('keydown', (e) => {
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Escape') api.closePopup();
   });
 
-  function escapeHtml(str) {
+  function escapeHtml(str: string): string {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;

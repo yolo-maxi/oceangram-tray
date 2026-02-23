@@ -1,16 +1,19 @@
-// daemonManager.js — Spawns and manages the oceangram-daemon child process
-const { fork } = require('child_process');
-const path = require('path');
-const http = require('http');
+// daemonManager.ts — Spawns and manages the oceangram-daemon child process
+import { fork, ChildProcess } from 'child_process';
+import path from 'path';
+import http from 'http';
 
-class DaemonManager {
+export class DaemonManager {
+  private process: ChildProcess | null;
+  private port: number;
+
   constructor() {
     this.process = null;
     this.port = 7777;
   }
 
   // Check if daemon is already running
-  async isRunning() {
+  async isRunning(): Promise<boolean> {
     return new Promise((resolve) => {
       const req = http.get(`http://localhost:${this.port}/health`, (res) => {
         resolve(res.statusCode === 200);
@@ -21,7 +24,7 @@ class DaemonManager {
   }
 
   // Get the daemon bundle path (works in dev and packaged)
-  getBundlePath() {
+  getBundlePath(): string {
     if (process.resourcesPath && !process.resourcesPath.includes('node_modules')) {
       // Packaged app
       return path.join(process.resourcesPath, 'daemon-bundle.js');
@@ -31,7 +34,7 @@ class DaemonManager {
   }
 
   // Start daemon as child process
-  async start() {
+  async start(): Promise<boolean> {
     if (await this.isRunning()) {
       console.log('[DaemonManager] Daemon already running on port', this.port);
       return true;
@@ -46,9 +49,9 @@ class DaemonManager {
       detached: false,
     });
 
-    this.process.stdout?.on('data', (d) => console.log('[Daemon]', d.toString().trim()));
-    this.process.stderr?.on('data', (d) => console.error('[Daemon ERR]', d.toString().trim()));
-    this.process.on('exit', (code) => {
+    this.process.stdout?.on('data', (d: Buffer) => console.log('[Daemon]', d.toString().trim()));
+    this.process.stderr?.on('data', (d: Buffer) => console.error('[Daemon ERR]', d.toString().trim()));
+    this.process.on('exit', (code: number | null) => {
       console.log('[DaemonManager] Daemon exited with code', code);
       this.process = null;
     });
@@ -57,17 +60,17 @@ class DaemonManager {
     return this.waitForReady(15000);
   }
 
-  async waitForReady(timeoutMs) {
+  async waitForReady(timeoutMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (await this.isRunning()) return true;
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise<void>((r) => setTimeout(r, 500));
     }
     console.error('[DaemonManager] Daemon failed to start within', timeoutMs, 'ms');
     return false;
   }
 
-  stop() {
+  stop(): void {
     if (this.process) {
       console.log('[DaemonManager] Stopping daemon process');
       this.process.kill('SIGTERM');
@@ -82,5 +85,3 @@ class DaemonManager {
     }
   }
 }
-
-module.exports = { DaemonManager };

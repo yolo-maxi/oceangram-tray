@@ -1,15 +1,30 @@
-// daemon.js — HTTP/WS client for oceangram-daemon at localhost:7777
-const { EventEmitter } = require('events');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+// daemon.ts — HTTP/WS client for oceangram-daemon at localhost:7777
+import { EventEmitter } from 'events';
+import http from 'http';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import WebSocketLib from 'ws';
+import {
+  TelegramUser,
+  TelegramDialog,
+  TelegramMessage,
+  DaemonEvent,
+  HealthResponse,
+} from './types';
 
 const BASE_URL = 'http://localhost:7777';
 const WS_URL = 'ws://localhost:7777/events';
-const AVATAR_DIR = path.join(os.homedir(), '.oceangram-tray', 'avatars');
+const AVATAR_DIR: string = path.join(os.homedir(), '.oceangram-tray', 'avatars');
 
 class DaemonClient extends EventEmitter {
+  connected: boolean;
+  private ws: WebSocketLib | null;
+  private reconnectAttempts: number;
+  private maxReconnectDelay: number;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null;
+  private healthCheckTimer: ReturnType<typeof setInterval> | null;
+
   constructor() {
     super();
     this.connected = false;
@@ -25,10 +40,10 @@ class DaemonClient extends EventEmitter {
 
   // ── HTTP helpers ──
 
-  _request(method, urlPath, body = null) {
+  private _request(method: string, urlPath: string, body: Record<string, unknown> | null = null): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const url = new URL(urlPath, BASE_URL);
-      const options = {
+      const options: http.RequestOptions = {
         hostname: url.hostname,
         port: url.port,
         path: url.pathname + url.search,
@@ -38,8 +53,8 @@ class DaemonClient extends EventEmitter {
       };
 
       const req = http.request(options, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
           const raw = Buffer.concat(chunks);
           const ct = res.headers['content-type'] || '';
@@ -66,9 +81,9 @@ class DaemonClient extends EventEmitter {
     });
   }
 
-  async getHealth() {
+  async getHealth(): Promise<HealthResponse | null> {
     try {
-      const res = await this._request('GET', '/health');
+      const res = await this._request('GET', '/health') as HealthResponse;
       this.connected = true;
       this.emit('connection-changed', true);
       return res;
@@ -79,31 +94,31 @@ class DaemonClient extends EventEmitter {
     }
   }
 
-  async getMe() {
+  async getMe(): Promise<TelegramUser | null> {
     try {
-      return await this._request('GET', '/me');
+      return await this._request('GET', '/me') as TelegramUser;
     } catch {
       return null;
     }
   }
 
-  async getDialogs() {
+  async getDialogs(): Promise<TelegramDialog[]> {
     try {
-      return await this._request('GET', '/dialogs');
+      return await this._request('GET', '/dialogs') as TelegramDialog[];
     } catch {
       return [];
     }
   }
 
-  async getMessages(dialogId, limit = 30) {
+  async getMessages(dialogId: string, limit: number = 30): Promise<TelegramMessage[]> {
     try {
-      return await this._request('GET', `/dialogs/${dialogId}/messages?limit=${limit}`);
+      return await this._request('GET', `/dialogs/${dialogId}/messages?limit=${limit}`) as TelegramMessage[];
     } catch {
       return [];
     }
   }
 
-  async sendMessage(dialogId, text) {
+  async sendMessage(dialogId: string, text: string): Promise<unknown> {
     try {
       return await this._request('POST', `/dialogs/${dialogId}/messages`, { text });
     } catch {
@@ -111,7 +126,7 @@ class DaemonClient extends EventEmitter {
     }
   }
 
-  async markRead(messageId) {
+  async markRead(messageId: number): Promise<unknown> {
     try {
       return await this._request('POST', `/messages/${messageId}/read`);
     } catch {
@@ -119,7 +134,7 @@ class DaemonClient extends EventEmitter {
     }
   }
 
-  async getProfilePhoto(userId) {
+  async getProfilePhoto(userId: string): Promise<string | null> {
     const cachePath = path.join(AVATAR_DIR, `${userId}.jpg`);
     // Return cached if fresh (< 24h)
     try {
@@ -139,7 +154,7 @@ class DaemonClient extends EventEmitter {
     return null;
   }
 
-  async getProfilePhotoBase64(userId) {
+  async getProfilePhotoBase64(userId: string): Promise<string | null> {
     const filePath = await this.getProfilePhoto(userId);
     if (!filePath) return null;
     try {
@@ -152,24 +167,17 @@ class DaemonClient extends EventEmitter {
 
   // ── WebSocket ──
 
-  connectWS() {
+  connectWS(): void {
     if (this.ws) {
       try { this.ws.close(); } catch { /* ignore */ }
     }
 
     try {
-      // Use dynamic import-like require for ws — Electron ships with it via net
-      const WebSocket = require('ws');
-      this.ws = new WebSocket(WS_URL);
+      this.ws = new WebSocketLib(WS_URL);
     } catch {
-      // Fallback: try native WebSocket (Electron 28+)
-      try {
-        this.ws = new WebSocket(WS_URL);
-      } catch {
-        console.log('[daemon] WebSocket not available, polling only');
-        this._scheduleReconnect();
-        return;
-      }
+      console.log('[daemon] WebSocket not available, polling only');
+      this._scheduleReconnect();
+      return;
     }
 
     this.ws.on('open', () => {
@@ -180,15 +188,16 @@ class DaemonClient extends EventEmitter {
       this.emit('ws-connected');
     });
 
-    this.ws.on('message', (data) => {
+    this.ws.on('message', (data: WebSocketLib.RawData) => {
       try {
-        const event = JSON.parse(data.toString());
+        const event = JSON.parse(data.toString()) as DaemonEvent;
         this.emit('event', event);
         if (event.type) {
           this.emit(event.type, event);
         }
       } catch (e) {
-        console.error('[daemon] WS parse error:', e.message);
+        const message = e instanceof Error ? e.message : String(e);
+        console.error('[daemon] WS parse error:', message);
       }
     });
 
@@ -200,12 +209,12 @@ class DaemonClient extends EventEmitter {
       this._scheduleReconnect();
     });
 
-    this.ws.on('error', (err) => {
+    this.ws.on('error', (err: Error) => {
       console.error('[daemon] WS error:', err.message);
     });
   }
 
-  _scheduleReconnect() {
+  private _scheduleReconnect(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
     this.reconnectAttempts++;
@@ -215,13 +224,13 @@ class DaemonClient extends EventEmitter {
 
   // ── Health check loop ──
 
-  startHealthCheck(intervalMs = 10000) {
+  startHealthCheck(intervalMs: number = 10000): void {
     this.stopHealthCheck();
     this.healthCheckTimer = setInterval(() => this.getHealth(), intervalMs);
     this.getHealth();
   }
 
-  stopHealthCheck() {
+  stopHealthCheck(): void {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
@@ -230,12 +239,12 @@ class DaemonClient extends EventEmitter {
 
   // ── Lifecycle ──
 
-  start() {
+  start(): void {
     this.startHealthCheck();
     this.connectWS();
   }
 
-  stop() {
+  stop(): void {
     this.stopHealthCheck();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
@@ -244,4 +253,4 @@ class DaemonClient extends EventEmitter {
   }
 }
 
-module.exports = new DaemonClient();
+export = new DaemonClient();

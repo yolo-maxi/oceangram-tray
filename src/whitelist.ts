@@ -1,12 +1,13 @@
-// whitelist.js — Config + whitelist management
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+// whitelist.ts — Config + whitelist management
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { AppConfig, AppSettings, WhitelistEntry } from './types';
 
-const CONFIG_DIR = path.join(os.homedir(), '.oceangram-tray');
-const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
+const CONFIG_DIR: string = path.join(os.homedir(), '.oceangram-tray');
+const CONFIG_PATH: string = path.join(CONFIG_DIR, 'config.json');
 
-const DEFAULT_CONFIG = {
+const DEFAULT_CONFIG: AppConfig = {
   whitelist: [],
   settings: {
     alwaysOnTop: true,
@@ -19,48 +20,51 @@ const DEFAULT_CONFIG = {
 };
 
 class WhitelistManager {
+  config: AppConfig;
+
   constructor() {
-    this.config = null;
+    this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as AppConfig;
     this.load();
   }
 
-  load() {
+  load(): void {
     try {
       fs.mkdirSync(CONFIG_DIR, { recursive: true });
       if (fs.existsSync(CONFIG_PATH)) {
         const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
-        this.config = JSON.parse(raw);
-        // Merge with defaults for any missing keys
-        this.config.settings = { ...DEFAULT_CONFIG.settings, ...this.config.settings };
-        if (!Array.isArray(this.config.whitelist)) {
-          this.config.whitelist = [];
-        }
+        const parsed = JSON.parse(raw) as Partial<AppConfig>;
+        this.config = {
+          whitelist: Array.isArray(parsed.whitelist) ? parsed.whitelist : [],
+          settings: { ...DEFAULT_CONFIG.settings, ...parsed.settings },
+        };
       } else {
-        this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+        this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as AppConfig;
         this.save();
       }
     } catch (err) {
-      console.error('[whitelist] Failed to load config:', err.message);
-      this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[whitelist] Failed to load config:', message);
+      this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as AppConfig;
       this.save();
     }
   }
 
-  save() {
+  save(): void {
     try {
       fs.mkdirSync(CONFIG_DIR, { recursive: true });
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(this.config, null, 2));
     } catch (err) {
-      console.error('[whitelist] Failed to save config:', err.message);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[whitelist] Failed to save config:', message);
     }
   }
 
-  isWhitelisted(userId) {
+  isWhitelisted(userId: string | number): boolean {
     const id = String(userId);
     return this.config.whitelist.some((u) => String(u.userId) === id);
   }
 
-  addUser(user) {
+  addUser(user: { userId: string | number; username?: string; displayName?: string }): boolean {
     const id = String(user.userId);
     if (this.isWhitelisted(id)) return false;
     this.config.whitelist.push({
@@ -72,7 +76,7 @@ class WhitelistManager {
     return true;
   }
 
-  removeUser(userId) {
+  removeUser(userId: string | number): boolean {
     const id = String(userId);
     const before = this.config.whitelist.length;
     this.config.whitelist = this.config.whitelist.filter((u) => String(u.userId) !== id);
@@ -83,23 +87,23 @@ class WhitelistManager {
     return false;
   }
 
-  getWhitelist() {
+  getWhitelist(): WhitelistEntry[] {
     return this.config.whitelist;
   }
 
-  getSettings() {
+  getSettings(): AppSettings {
     return this.config.settings;
   }
 
-  updateSettings(partial) {
+  updateSettings(partial: Partial<AppSettings>): void {
     this.config.settings = { ...this.config.settings, ...partial };
     this.save();
   }
 
-  getUserInfo(userId) {
+  getUserInfo(userId: string | number): WhitelistEntry | null {
     const id = String(userId);
     return this.config.whitelist.find((u) => String(u.userId) === id) || null;
   }
 }
 
-module.exports = new WhitelistManager();
+export = new WhitelistManager();

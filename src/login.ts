@@ -1,25 +1,27 @@
-// login.js — Login window renderer logic
+// login.ts — Login window renderer logic
+/// <reference path="renderer.d.ts" />
+
 const DAEMON_URL = 'http://127.0.0.1:7777';
 
-let phoneCodeHash = null;
-let phoneNumber = null;
-let loginPollTimer = null;
+let phoneCodeHash: string | null = null;
+let phoneNumber: string | null = null;
+let loginPollTimer: ReturnType<typeof setInterval> | null = null;
 
 // ── Elements ──
-const phoneInput = document.getElementById('phone-input');
-const codeInput = document.getElementById('code-input');
-const passwordInput = document.getElementById('password-input');
-const sendCodeBtn = document.getElementById('send-code-btn');
-const verifyCodeBtn = document.getElementById('verify-code-btn');
-const verify2faBtn = document.getElementById('verify-2fa-btn');
-const phoneError = document.getElementById('phone-error');
-const codeError = document.getElementById('code-error');
-const twoFaError = document.getElementById('2fa-error');
-const phoneStatus = document.getElementById('phone-status');
-const qrError = document.getElementById('qr-error');
+const phoneInput = document.getElementById('phone-input') as HTMLInputElement;
+const codeInput = document.getElementById('code-input') as HTMLInputElement;
+const passwordInput = document.getElementById('password-input') as HTMLInputElement;
+const sendCodeBtn = document.getElementById('send-code-btn') as HTMLButtonElement;
+const verifyCodeBtn = document.getElementById('verify-code-btn') as HTMLButtonElement;
+const verify2faBtn = document.getElementById('verify-2fa-btn') as HTMLButtonElement;
+const phoneError = document.getElementById('phone-error')!;
+const codeError = document.getElementById('code-error')!;
+const twoFaError = document.getElementById('2fa-error')!;
+const phoneStatus = document.getElementById('phone-status')!;
+const qrError = document.getElementById('qr-error')!;
 const qrDisplay = document.getElementById('qr-display');
-const qrLoading = document.getElementById('qr-loading');
-const closeBtn = document.getElementById('close-btn');
+const qrLoading = document.getElementById('qr-loading')!;
+const closeBtn = document.getElementById('close-btn')!;
 
 // ── Tabs ──
 document.querySelectorAll('.tab').forEach((tab) => {
@@ -27,9 +29,9 @@ document.querySelectorAll('.tab').forEach((tab) => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
     tab.classList.add('active');
 
-    const which = tab.dataset.tab;
-    document.getElementById('phone-section').style.display = which === 'phone' ? '' : 'none';
-    document.getElementById('qr-section').style.display = which === 'qr' ? '' : 'none';
+    const which = (tab as HTMLElement).dataset.tab;
+    document.getElementById('phone-section')!.style.display = which === 'phone' ? '' : 'none';
+    document.getElementById('qr-section')!.style.display = which === 'qr' ? '' : 'none';
 
     if (which === 'qr') {
       loadQR();
@@ -38,32 +40,38 @@ document.querySelectorAll('.tab').forEach((tab) => {
 });
 
 // ── Steps ──
-function showStep(stepId) {
+function showStep(stepId: string): void {
   document.querySelectorAll('.step').forEach((s) => s.classList.remove('active'));
-  document.getElementById(stepId).classList.add('active');
+  document.getElementById(stepId)!.classList.add('active');
 }
 
-function showError(el, msg) {
+function showError(el: HTMLElement, msg: string): void {
   el.textContent = msg;
   el.classList.add('visible');
 }
-function hideError(el) {
+function hideError(el: HTMLElement): void {
   el.classList.remove('visible');
-}
-function showStatus(el, msg) {
-  el.textContent = msg;
-  el.classList.add('visible');
 }
 
 // ── HTTP ──
-async function api(method, path, body) {
-  const opts = {
+interface ApiResponse {
+  ok?: boolean;
+  phoneCodeHash?: string;
+  need2FA?: boolean;
+  error?: string;
+  connected?: boolean;
+  id?: string;
+  [key: string]: unknown;
+}
+
+async function api(method: string, urlPath: string, body?: Record<string, unknown>): Promise<ApiResponse> {
+  const opts: RequestInit = {
     method,
     headers: { 'Content-Type': 'application/json' },
   };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(DAEMON_URL + path, opts);
-  const data = await res.json();
+  const res = await fetch(DAEMON_URL + urlPath, opts);
+  const data = await res.json() as ApiResponse;
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
@@ -72,7 +80,7 @@ async function api(method, path, body) {
 sendCodeBtn.addEventListener('click', async () => {
   hideError(phoneError);
   const phone = phoneInput.value.trim();
-  if (!phone) return showError(phoneError, 'Enter your phone number');
+  if (!phone) { showError(phoneError, 'Enter your phone number'); return; }
 
   sendCodeBtn.disabled = true;
   sendCodeBtn.textContent = 'Sending...';
@@ -80,11 +88,12 @@ sendCodeBtn.addEventListener('click', async () => {
   try {
     const result = await api('POST', '/login/phone', { phone });
     phoneNumber = phone;
-    phoneCodeHash = result.phoneCodeHash;
+    phoneCodeHash = result.phoneCodeHash || null;
     showStep('step-code');
     codeInput.focus();
   } catch (err) {
-    showError(phoneError, err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    showError(phoneError, message);
   } finally {
     sendCodeBtn.disabled = false;
     sendCodeBtn.textContent = 'Send Code';
@@ -94,7 +103,7 @@ sendCodeBtn.addEventListener('click', async () => {
 verifyCodeBtn.addEventListener('click', async () => {
   hideError(codeError);
   const code = codeInput.value.trim();
-  if (!code) return showError(codeError, 'Enter the verification code');
+  if (!code) { showError(codeError, 'Enter the verification code'); return; }
 
   verifyCodeBtn.disabled = true;
   verifyCodeBtn.textContent = 'Verifying...';
@@ -113,7 +122,8 @@ verifyCodeBtn.addEventListener('click', async () => {
       onLoginSuccess();
     }
   } catch (err) {
-    showError(codeError, err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    showError(codeError, message);
   } finally {
     verifyCodeBtn.disabled = false;
     verifyCodeBtn.textContent = 'Verify';
@@ -123,7 +133,7 @@ verifyCodeBtn.addEventListener('click', async () => {
 verify2faBtn.addEventListener('click', async () => {
   hideError(twoFaError);
   const password = passwordInput.value;
-  if (!password) return showError(twoFaError, 'Enter your 2FA password');
+  if (!password) { showError(twoFaError, 'Enter your 2FA password'); return; }
 
   verify2faBtn.disabled = true;
   verify2faBtn.textContent = 'Verifying...';
@@ -132,7 +142,8 @@ verify2faBtn.addEventListener('click', async () => {
     await api('POST', '/login/2fa', { password });
     onLoginSuccess();
   } catch (err) {
-    showError(twoFaError, err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    showError(twoFaError, message);
   } finally {
     verify2faBtn.disabled = false;
     verify2faBtn.textContent = 'Submit';
@@ -140,14 +151,14 @@ verify2faBtn.addEventListener('click', async () => {
 });
 
 // Enter key handlers
-phoneInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCodeBtn.click(); });
-codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') verifyCodeBtn.click(); });
-passwordInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') verify2faBtn.click(); });
+phoneInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') sendCodeBtn.click(); });
+codeInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') verifyCodeBtn.click(); });
+passwordInput.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') verify2faBtn.click(); });
 
 // ── QR Login ──
 // The daemon doesn't currently expose a /login/qr endpoint.
 // Show the daemon's web-based login page as a fallback.
-async function loadQR() {
+async function loadQR(): Promise<void> {
   if (qrDisplay) qrDisplay.style.display = 'none';
   qrLoading.style.display = '';
   hideError(qrError);
@@ -155,7 +166,7 @@ async function loadQR() {
   try {
     // Check if daemon is connected (already logged in)
     const res = await fetch(DAEMON_URL + '/health');
-    const health = await res.json();
+    const health = await res.json() as ApiResponse;
 
     if (health.connected) {
       onLoginSuccess();
@@ -186,20 +197,21 @@ async function loadQR() {
     }
   } catch (err) {
     qrLoading.style.display = 'none';
-    showError(qrError, 'Cannot reach daemon: ' + err.message);
+    const message = err instanceof Error ? err.message : String(err);
+    showError(qrError, 'Cannot reach daemon: ' + message);
   }
 }
 
 // ── Poll for login success ──
 // After a successful login (via phone flow, 2FA, or external browser),
 // the daemon's /me endpoint will start responding.
-function startLoginPoll() {
+function startLoginPoll(): void {
   if (loginPollTimer) return;
   loginPollTimer = setInterval(async () => {
     try {
       const res = await fetch(DAEMON_URL + '/me');
       if (res.ok) {
-        const me = await res.json();
+        const me = await res.json() as ApiResponse;
         if (me && me.id) {
           onLoginSuccess();
         }
@@ -214,7 +226,7 @@ function startLoginPoll() {
 startLoginPoll();
 
 // ── Success ──
-function onLoginSuccess() {
+function onLoginSuccess(): void {
   // Stop polling
   if (loginPollTimer) {
     clearInterval(loginPollTimer);
@@ -226,8 +238,11 @@ function onLoginSuccess() {
     window.oceangram.loginSuccess();
   } else {
     // Fallback: show success and close
-    document.querySelector('.content').innerHTML =
-      '<div class="success-view"><div class="logo">✅</div><p>Login successful!</p><p class="subtitle">Starting Oceangram...</p></div>';
+    const content = document.querySelector('.content');
+    if (content) {
+      content.innerHTML =
+        '<div class="success-view"><div class="logo">✅</div><p>Login successful!</p><p class="subtitle">Starting Oceangram...</p></div>';
+    }
     setTimeout(() => window.close(), 1500);
   }
 }

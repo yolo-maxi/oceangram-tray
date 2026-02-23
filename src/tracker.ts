@@ -1,27 +1,34 @@
-// tracker.js — Message tracking + filtering for whitelisted users
-const { EventEmitter } = require('events');
-const daemon = require('./daemon');
-const whitelist = require('./whitelist');
+// tracker.ts — Message tracking + filtering for whitelisted users
+import { EventEmitter } from 'events';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import daemon from './daemon';
+import whitelist from './whitelist';
+import { TelegramMessage, TelegramDialog, DaemonEvent, UnreadEntry } from './types';
+
+const LAST_SEEN_FILE: string = path.join(os.homedir(), '.oceangram-tray', 'last-seen.json');
 
 class MessageTracker extends EventEmitter {
+  private unreads: Map<string, UnreadEntry>;
+  private lastSeenIds: Map<string, number>;
+  private pollTimer: ReturnType<typeof setInterval> | null;
+  private wsActive: boolean;
+
   constructor() {
     super();
-    this.unreads = new Map(); // userId -> { dialogId, messages: [], count }
-    this.lastSeenIds = new Map(); // dialogId -> lastMessageId
+    this.unreads = new Map();
+    this.lastSeenIds = new Map();
     this.pollTimer = null;
     this.wsActive = false;
 
     this._loadLastSeen();
   }
 
-  _loadLastSeen() {
+  private _loadLastSeen(): void {
     try {
-      const fs = require('fs');
-      const path = require('path');
-      const os = require('os');
-      const file = path.join(os.homedir(), '.oceangram-tray', 'last-seen.json');
-      if (fs.existsSync(file)) {
-        const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      if (fs.existsSync(LAST_SEEN_FILE)) {
+        const data = JSON.parse(fs.readFileSync(LAST_SEEN_FILE, 'utf-8')) as Record<string, number>;
         for (const [k, v] of Object.entries(data)) {
           this.lastSeenIds.set(k, v);
         }
@@ -29,20 +36,16 @@ class MessageTracker extends EventEmitter {
     } catch { /* ignore */ }
   }
 
-  _saveLastSeen() {
+  private _saveLastSeen(): void {
     try {
-      const fs = require('fs');
-      const path = require('path');
-      const os = require('os');
-      const file = path.join(os.homedir(), '.oceangram-tray', 'last-seen.json');
-      const obj = Object.fromEntries(this.lastSeenIds);
-      fs.writeFileSync(file, JSON.stringify(obj));
+      const obj: Record<string, number> = Object.fromEntries(this.lastSeenIds);
+      fs.writeFileSync(LAST_SEEN_FILE, JSON.stringify(obj));
     } catch { /* ignore */ }
   }
 
-  start() {
+  start(): void {
     // Listen for WS events
-    daemon.on('newMessage', (event) => this._handleNewMessage(event));
+    daemon.on('newMessage', (event: DaemonEvent) => this._handleNewMessage(event));
     daemon.on('ws-connected', () => {
       this.wsActive = true;
       console.log('[tracker] WS active, reducing poll frequency');
@@ -59,7 +62,7 @@ class MessageTracker extends EventEmitter {
     setTimeout(() => this._poll(), 1000);
   }
 
-  stop() {
+  stop(): void {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -67,7 +70,7 @@ class MessageTracker extends EventEmitter {
     this._saveLastSeen();
   }
 
-  async _poll() {
+  private async _poll(): Promise<void> {
     // If WS is active, poll less frequently (just for catch-up)
     if (!daemon.connected) return;
 
@@ -76,16 +79,17 @@ class MessageTracker extends EventEmitter {
       if (!Array.isArray(dialogs)) return;
 
       for (const dialog of dialogs) {
-        const userId = String(dialog.userId || dialog.id);
+        const d = dialog as TelegramDialog;
+        const userId = String(d.userId || d.id);
         if (!whitelist.isWhitelisted(userId)) continue;
 
-        const dialogId = String(dialog.id);
+        const dialogId = String(d.id);
         const messages = await daemon.getMessages(dialogId, 10);
         if (!Array.isArray(messages) || messages.length === 0) continue;
 
         const lastSeen = this.lastSeenIds.get(dialogId);
         const newMsgs = lastSeen
-          ? messages.filter((m) => m.id > lastSeen && String(m.fromId || m.senderId) === userId)
+          ? messages.filter((m: TelegramMessage) => m.id > lastSeen && String(m.fromId || m.senderId) === userId)
           : [];
 
         if (newMsgs.length > 0) {
@@ -95,12 +99,13 @@ class MessageTracker extends EventEmitter {
         }
       }
     } catch (err) {
-      console.error('[tracker] Poll error:', err.message);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[tracker] Poll error:', message);
     }
   }
 
-  _handleNewMessage(event) {
-    const msg = event.message || event;
+  private _handleNewMessage(event: DaemonEvent): void {
+    const msg = (event.message || event) as TelegramMessage;
     const fromId = String(msg.fromId || msg.senderId || '');
     const dialogId = String(msg.dialogId || msg.chatId || '');
 
@@ -109,12 +114,12 @@ class MessageTracker extends EventEmitter {
     this._addUnread(fromId, dialogId, msg);
   }
 
-  _addUnread(userId, dialogId, msg) {
+  private _addUnread(userId: string, dialogId: string, msg: TelegramMessage): void {
     if (!this.unreads.has(userId)) {
       this.unreads.set(userId, { dialogId, messages: [], count: 0 });
     }
 
-    const entry = this.unreads.get(userId);
+    const entry = this.unreads.get(userId)!;
     // Prevent duplicates
     if (entry.messages.some((m) => m.id === msg.id)) return;
 
@@ -126,14 +131,14 @@ class MessageTracker extends EventEmitter {
     this.emit('user-unreads-changed', { userId, count: entry.count });
   }
 
-  markRead(userId) {
+  markRead(userId: string): void {
     const entry = this.unreads.get(userId);
     if (!entry) return;
 
     // Update last seen to the latest message
     const latest = entry.messages[entry.messages.length - 1];
     if (latest) {
-      this.lastSeenIds.set(entry.dialogId, latest.id);
+      this.lastSeenIds.set(entry.dialogId || '', latest.id);
       this._saveLastSeen();
       // Mark read on daemon
       daemon.markRead(latest.id).catch(() => {});
@@ -144,19 +149,19 @@ class MessageTracker extends EventEmitter {
     this.emit('user-unreads-changed', { userId, count: 0 });
   }
 
-  getUnreads(userId) {
+  getUnreads(userId: string): UnreadEntry {
     return this.unreads.get(userId) || { dialogId: null, messages: [], count: 0 };
   }
 
-  getAllUnreads() {
-    const result = {};
+  getAllUnreads(): Record<string, UnreadEntry> {
+    const result: Record<string, UnreadEntry> = {};
     for (const [userId, data] of this.unreads) {
       result[userId] = data;
     }
     return result;
   }
 
-  getTotalUnreadCount() {
+  getTotalUnreadCount(): number {
     let total = 0;
     for (const [, data] of this.unreads) {
       total += data.count;
@@ -165,4 +170,4 @@ class MessageTracker extends EventEmitter {
   }
 }
 
-module.exports = new MessageTracker();
+export = new MessageTracker();

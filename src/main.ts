@@ -1,17 +1,26 @@
-// main.js — Electron main process for Oceangram Tray
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, Notification, screen } = require('electron');
-const path = require('path');
-const http = require('http');
-const { DaemonManager } = require('./daemonManager');
+// main.ts — Electron main process for Oceangram Tray
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, Notification, screen, IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
+import path from 'path';
+import http from 'http';
+import { DaemonManager } from './daemonManager';
+import { NewMessageEvent, AppSettings, WhitelistEntry } from './types';
 
-// Modules (loaded after app ready)
-let daemon, whitelist, tracker, bubbles;
+// Module types (loaded after app ready)
+type DaemonModule = typeof import('./daemon');
+type WhitelistModule = typeof import('./whitelist');
+type TrackerModule = typeof import('./tracker');
+type BubblesModule = typeof import('./bubbles');
+
+let daemon: DaemonModule | null = null;
+let whitelist: WhitelistModule | null = null;
+let tracker: TrackerModule | null = null;
+let bubbles: BubblesModule | null = null;
 
 // Globals
-let tray = null;
-let settingsWindow = null;
-let loginWindow = null;
-let chatPopups = new Map(); // userId -> BrowserWindow
+let tray: Tray | null = null;
+let settingsWindow: BrowserWindow | null = null;
+let loginWindow: BrowserWindow | null = null;
+const chatPopups: Map<string, BrowserWindow> = new Map();
 const daemonManager = new DaemonManager();
 
 // ── App setup ──
@@ -32,20 +41,20 @@ app.on('second-instance', () => {
 
 // Hide dock icon on macOS
 if (process.platform === 'darwin') {
-  app.dock.hide();
+  app.dock?.hide();
 }
 
 // ── Helper: check if logged in ──
 
-function checkLoggedIn() {
+function checkLoggedIn(): Promise<boolean> {
   return new Promise((resolve) => {
     const req = http.get('http://localhost:7777/me', (res) => {
       if (res.statusCode === 200) {
         let data = '';
-        res.on('data', (c) => (data += c));
+        res.on('data', (c: Buffer) => (data += c));
         res.on('end', () => {
           try {
-            const me = JSON.parse(data);
+            const me = JSON.parse(data) as { id?: string };
             resolve(!!me.id);
           } catch {
             resolve(false);
@@ -66,14 +75,14 @@ function checkLoggedIn() {
 app.whenReady().then(async () => {
   // Create tray immediately with "Starting..." state
   createTray();
-  tray.setToolTip('Oceangram — Starting...');
+  tray!.setToolTip('Oceangram — Starting...');
 
   // Start the daemon
   console.log('[main] Starting daemon...');
   const daemonReady = await daemonManager.start();
   if (!daemonReady) {
     console.error('[main] Daemon failed to start');
-    tray.setToolTip('Oceangram — Daemon failed to start');
+    tray!.setToolTip('Oceangram — Daemon failed to start');
     // Still try to continue — daemon might be externally managed
   }
 
@@ -82,7 +91,7 @@ app.whenReady().then(async () => {
 
   if (!loggedIn) {
     console.log('[main] Not logged in — showing login window');
-    tray.setToolTip('Oceangram — Login required');
+    tray!.setToolTip('Oceangram — Login required');
     showLoginWindow();
   } else {
     console.log('[main] Already logged in — initializing');
@@ -90,9 +99,9 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('window-all-closed', (e) => {
+app.on('window-all-closed', () => {
   // Don't quit when windows close — we're a tray app
-  e.preventDefault();
+  // No-op: prevent default quit behavior for tray apps
 });
 
 app.on('before-quit', () => {
@@ -104,7 +113,7 @@ app.on('before-quit', () => {
 
 // ── Login Window ──
 
-function showLoginWindow() {
+function showLoginWindow(): void {
   if (loginWindow && !loginWindow.isDestroyed()) {
     loginWindow.focus();
     return;
@@ -130,7 +139,7 @@ function showLoginWindow() {
     },
   });
 
-  loginWindow.loadFile(path.join(__dirname, 'login.html'));
+  loginWindow.loadFile(path.join(__dirname, '..', 'src', 'login.html'));
 
   loginWindow.on('closed', () => {
     loginWindow = null;
@@ -156,12 +165,12 @@ ipcMain.on('close-login', () => {
 
 // ── Initialize app after login ──
 
-function initializeApp() {
+function initializeApp(): void {
   // Load modules
-  daemon = require('./daemon');
-  whitelist = require('./whitelist');
-  tracker = require('./tracker');
-  bubbles = require('./bubbles');
+  daemon = require('./daemon') as DaemonModule;
+  whitelist = require('./whitelist') as WhitelistModule;
+  tracker = require('./tracker') as TrackerModule;
+  bubbles = require('./bubbles') as BubblesModule;
 
   // Setup
   setupIPC();
@@ -173,7 +182,7 @@ function initializeApp() {
   tracker.start();
 
   // Update tray based on events
-  daemon.on('connection-changed', (connected) => {
+  daemon.on('connection-changed', (connected: boolean) => {
     updateTrayIcon();
     // Forward to all open windows
     for (const [, win] of chatPopups) {
@@ -187,7 +196,7 @@ function initializeApp() {
     updateTrayIcon();
   });
 
-  tracker.on('new-message', (data) => {
+  tracker.on('new-message', (data: NewMessageEvent) => {
     // Forward to relevant chat popup
     const popup = chatPopups.get(data.userId);
     if (popup && !popup.isDestroyed()) {
@@ -195,7 +204,7 @@ function initializeApp() {
     }
 
     // Show notification if enabled
-    const settings = whitelist.getSettings();
+    const settings = whitelist!.getSettings();
     if (settings.showNotifications) {
       showNotification(data);
     }
@@ -207,8 +216,8 @@ function initializeApp() {
 
 // ── Tray ──
 
-function createTray() {
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+function createTray(): void {
+  const iconPath = path.join(__dirname, '..', 'src', 'assets', 'tray-icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   // Set as template for macOS dark/light mode
   icon.setTemplateImage(true);
@@ -218,15 +227,15 @@ function createTray() {
   updateTrayMenu();
 }
 
-function updateTrayMenu() {
+function updateTrayMenu(): void {
   const bubblesVisible = bubbles ? bubbles.visible : true;
-  const items = [];
+  const items: MenuItemConstructorOptions[] = [];
 
   if (bubbles) {
     items.push({
       label: bubblesVisible ? 'Hide Bubbles' : 'Show Bubbles',
       click: () => {
-        bubbles.toggleVisibility();
+        bubbles!.toggleVisibility();
         updateTrayMenu();
       },
     });
@@ -246,10 +255,10 @@ function updateTrayMenu() {
   });
 
   const menu = Menu.buildFromTemplate(items);
-  tray.setContextMenu(menu);
+  tray!.setContextMenu(menu);
 }
 
-function updateTrayIcon() {
+function updateTrayIcon(): void {
   if (!tray) return;
 
   const totalUnreads = tracker ? tracker.getTotalUnreadCount() : 0;
@@ -267,7 +276,7 @@ function updateTrayIcon() {
     tooltip = 'Oceangram — Connected';
   }
 
-  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', iconName));
+  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'src', 'assets', iconName));
   icon.setTemplateImage(true);
   tray.setImage(icon);
   tray.setToolTip(tooltip);
@@ -275,8 +284,8 @@ function updateTrayIcon() {
 
 // ── Notifications ──
 
-function showNotification(data) {
-  const userInfo = whitelist.getUserInfo(data.userId);
+function showNotification(data: NewMessageEvent): void {
+  const userInfo = whitelist!.getUserInfo(data.userId);
   const name = userInfo ? userInfo.displayName : 'Unknown';
   const text = data.message.text || data.message.message || 'New message';
 
@@ -296,10 +305,10 @@ function showNotification(data) {
 
 // ── Chat Popup ──
 
-function openChatPopup(userId) {
+function openChatPopup(userId: string): void {
   // If already open, focus it
   if (chatPopups.has(userId)) {
-    const existing = chatPopups.get(userId);
+    const existing = chatPopups.get(userId)!;
     if (!existing.isDestroyed()) {
       existing.focus();
       return;
@@ -307,9 +316,9 @@ function openChatPopup(userId) {
     chatPopups.delete(userId);
   }
 
-  const settings = whitelist.getSettings();
-  const userInfo = whitelist.getUserInfo(userId);
-  const unreads = tracker.getUnreads(userId);
+  const settings = whitelist!.getSettings();
+  const userInfo = whitelist!.getUserInfo(userId);
+  const unreads = tracker!.getUnreads(userId);
 
   // Position near the bubble if possible
   const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
@@ -340,7 +349,7 @@ function openChatPopup(userId) {
     },
   });
 
-  popup.loadFile(path.join(__dirname, 'popup.html'));
+  popup.loadFile(path.join(__dirname, '..', 'src', 'popup.html'));
 
   popup.webContents.on('did-finish-load', () => {
     popup.webContents.send('popup-init', {
@@ -348,7 +357,7 @@ function openChatPopup(userId) {
       dialogId: unreads.dialogId || userId,
       displayName: userInfo ? userInfo.displayName : userId,
     });
-    popup.webContents.send('connection-changed', daemon.connected);
+    popup.webContents.send('connection-changed', daemon!.connected);
   });
 
   // Track popup
@@ -359,7 +368,7 @@ function openChatPopup(userId) {
   });
 
   // Mark messages as read when popup opens
-  tracker.markRead(userId);
+  tracker!.markRead(userId);
 
   // Remove bubble when chat is open
   if (bubbles) {
@@ -369,7 +378,7 @@ function openChatPopup(userId) {
 
 // ── Settings Window ──
 
-function openSettings() {
+function openSettings(): void {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.focus();
     return;
@@ -394,7 +403,7 @@ function openSettings() {
     },
   });
 
-  settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
+  settingsWindow.loadFile(path.join(__dirname, '..', 'src', 'settings.html'));
 
   settingsWindow.on('closed', () => {
     settingsWindow = null;
@@ -403,53 +412,53 @@ function openSettings() {
 
 // ── IPC Handlers ──
 
-function setupIPC() {
+function setupIPC(): void {
   // Messages
-  ipcMain.handle('get-messages', async (_, dialogId, limit) => {
-    return await daemon.getMessages(dialogId, limit || 30);
+  ipcMain.handle('get-messages', async (_: IpcMainInvokeEvent, dialogId: string, limit?: number) => {
+    return await daemon!.getMessages(dialogId, limit || 30);
   });
 
-  ipcMain.handle('send-message', async (_, dialogId, text) => {
-    return await daemon.sendMessage(dialogId, text);
+  ipcMain.handle('send-message', async (_: IpcMainInvokeEvent, dialogId: string, text: string) => {
+    return await daemon!.sendMessage(dialogId, text);
   });
 
-  ipcMain.handle('mark-read', async (_, userId) => {
-    tracker.markRead(userId);
+  ipcMain.handle('mark-read', async (_: IpcMainInvokeEvent, userId: string) => {
+    tracker!.markRead(userId);
     return true;
   });
 
-  ipcMain.handle('get-dialog-info', async (_, dialogId) => {
-    const dialogs = await daemon.getDialogs();
+  ipcMain.handle('get-dialog-info', async (_: IpcMainInvokeEvent, dialogId: string) => {
+    const dialogs = await daemon!.getDialogs();
     if (Array.isArray(dialogs)) {
-      return dialogs.find(d => String(d.id) === String(dialogId)) || null;
+      return dialogs.find((d) => String(d.id) === String(dialogId)) || null;
     }
     return null;
   });
 
-  ipcMain.handle('get-profile-photo', async (_, userId) => {
-    return await daemon.getProfilePhotoBase64(userId);
+  ipcMain.handle('get-profile-photo', async (_: IpcMainInvokeEvent, userId: string) => {
+    return await daemon!.getProfilePhotoBase64(userId);
   });
 
   // Whitelist
   ipcMain.handle('get-whitelist', () => {
-    return whitelist.getWhitelist();
+    return whitelist!.getWhitelist();
   });
 
-  ipcMain.handle('add-user', (_, user) => {
-    return whitelist.addUser(user);
+  ipcMain.handle('add-user', (_: IpcMainInvokeEvent, user: { userId: string; username?: string; displayName?: string }) => {
+    return whitelist!.addUser(user);
   });
 
-  ipcMain.handle('remove-user', (_, userId) => {
-    return whitelist.removeUser(userId);
+  ipcMain.handle('remove-user', (_: IpcMainInvokeEvent, userId: string) => {
+    return whitelist!.removeUser(userId);
   });
 
   // Settings
   ipcMain.handle('get-settings', () => {
-    return whitelist.getSettings();
+    return whitelist!.getSettings();
   });
 
-  ipcMain.handle('update-settings', (_, settings) => {
-    whitelist.updateSettings(settings);
+  ipcMain.handle('update-settings', (_: IpcMainInvokeEvent, settings: Partial<AppSettings>) => {
+    whitelist!.updateSettings(settings);
     // Apply settings changes
     if (settings.bubblePosition !== undefined && bubbles) {
       bubbles.repositionAll();
@@ -459,22 +468,22 @@ function setupIPC() {
 
   // Dialogs
   ipcMain.handle('get-dialogs', async () => {
-    return await daemon.getDialogs();
+    return await daemon!.getDialogs();
   });
 
   // Daemon status
   ipcMain.handle('get-daemon-status', async () => {
-    const health = await daemon.getHealth();
+    const health = await daemon!.getHealth();
     return health !== null;
   });
 
   // User info
   ipcMain.handle('get-me', async () => {
-    return await daemon.getMe();
+    return await daemon!.getMe();
   });
 
   // Close popup (from renderer)
-  ipcMain.on('close-popup', (event) => {
+  ipcMain.on('close-popup', (event: IpcMainEvent) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win && !win.isDestroyed()) {
       win.close();
