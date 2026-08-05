@@ -1,9 +1,23 @@
 // main.ts — Electron main process for Oceangram Tray
-import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, Notification, screen, IpcMainEvent, IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  Tray,
+  Menu,
+  ipcMain,
+  nativeImage,
+  Notification,
+  screen,
+  IpcMainEvent,
+  IpcMainInvokeEvent,
+  MenuItemConstructorOptions,
+} from 'electron';
 import path from 'path';
+import os from 'os';
 import http from 'http';
 import { DaemonManager } from './daemonManager';
 import { NewMessageEvent, AppSettings, WhitelistEntry } from './types';
+import { DEFAULT_INSTANCE_HEARTBEAT_MS, DEFAULT_INSTANCE_STALE_MS, SingleInstanceGuard } from './instanceGuard';
 
 // Module types (loaded after app ready)
 type DaemonModule = typeof import('./daemon');
@@ -23,19 +37,35 @@ let loginWindow: BrowserWindow | null = null;
 const chatPopups: Map<string, BrowserWindow> = new Map();
 const daemonManager = new DaemonManager();
 
+const instanceGuard = new SingleInstanceGuard({
+  metadataPath: path.join(os.homedir(), '.oceangram-tray', 'instance.json'),
+  staleAfterMs: DEFAULT_INSTANCE_STALE_MS,
+  heartbeatMs: DEFAULT_INSTANCE_HEARTBEAT_MS,
+  appVersion: app.getVersion(),
+});
+
 // ── App setup ──
 
-// Single instance lock
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-  process.exit(0);
-}
-
 app.on('second-instance', () => {
-  // Focus settings if open
+  // Reuse existing instance when a duplicate is launched
+  if (loginWindow && !loginWindow.isDestroyed()) {
+    loginWindow.show();
+    loginWindow.focus();
+    return;
+  }
+
   if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
     settingsWindow.focus();
+    return;
+  }
+
+  for (const popup of chatPopups.values()) {
+    if (!popup.isDestroyed()) {
+      popup.show();
+      popup.focus();
+      return;
+    }
   }
 });
 
@@ -72,7 +102,42 @@ function checkLoggedIn(): Promise<boolean> {
 
 // ── App ready ──
 
+async function ensureSingleInstance(): Promise<boolean> {
+  const recovery = await instanceGuard.recoverExistingInstance();
+
+  if (recovery.action === 'cleaned-dead') {
+    console.log('[instance] Cleaned stale instance metadata for PID', recovery.previous?.pid);
+  }
+
+  if (recovery.action === 'killed-stale') {
+    console.log('[instance] Recovered from stale instance by terminating PID', recovery.previous?.pid);
+  }
+
+  if (recovery.action === 'failed-to-terminate-stale') {
+    console.error('[instance] Failed to terminate stale instance PID', recovery.previous?.pid);
+    return false;
+  }
+
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    if (recovery.previous) {
+      console.log('[instance] Another instance is already running with PID', recovery.previous.pid, '- reusing existing process');
+    }
+    return false;
+  }
+
+  instanceGuard.registerCurrentInstance();
+  console.log('[instance] Single-instance guard ready (PID', process.pid, ')');
+  return true;
+}
+
 app.whenReady().then(async () => {
+  const ready = await ensureSingleInstance();
+  if (!ready) {
+    app.quit();
+    process.exit(0);
+  }
+
   // Create tray immediately with "Starting..." state
   createTray();
   tray!.setToolTip('Oceangram — Starting...');
@@ -109,6 +174,7 @@ app.on('before-quit', () => {
   if (tracker) tracker.stop();
   if (bubbles) bubbles.destroyAll();
   daemonManager.stop();
+  instanceGuard.shutdown();
 });
 
 // ── Login Window ──

@@ -10,7 +10,8 @@
     "build:daemon": "node build-daemon.mjs",
     "build": "pnpm run build:daemon && pnpm run compile && electron-builder --mac",
     "build:mac": "pnpm run build:daemon && pnpm run compile && electron-builder --mac",
-    "build:dir": "pnpm run build:daemon && pnpm run compile && electron-builder --mac --dir"
+    "build:dir": "pnpm run build:daemon && pnpm run compile && electron-builder --mac --dir",
+    "test:guard": "pnpm run compile && node --test dist/instanceGuard.test.js"
   },
   "build": {
     "appId": "com.oceangram.tray",
